@@ -6,7 +6,7 @@ from time import sleep
 import time
 
 CLOCKWISE = None
-LINE_COOLDOWN = 1.2
+LINE_COOLDOWN = 1
 blue_detected = False
 orange_detected = False
 line_count = 0
@@ -26,7 +26,7 @@ last_blue_time = 0.0
 last_line_time = 0.0
 prev_marker_seen = False   # tracks whether the marker was visible last frame
 
-KP = 0.02
+KP = 0.009
 DIR_PIN = 17          # DIR2
 PWM_PIN = 27          # PWM2
 SERVO_PIN = 25
@@ -52,7 +52,6 @@ last_angle = -1
 
 current_angle = CENTER
 last_servo_time = 0
-last_valid_angle = CENTER   # holds steering steady while the marker is in view
 
 def steer(angle):
 
@@ -68,7 +67,7 @@ def steer(angle):
 def forward(speed):
     # If your motor moves backwards,
     # change HIGH to LOW
-    GPIO.output(DIR_PIN, GPIO.HIGH) #
+    GPIO.output(DIR_PIN, GPIO.LOW) #
     motor_pwm.ChangeDutyCycle(speed)
 
 def stop():
@@ -134,8 +133,8 @@ kernel = np.ones((5,5), np.uint8)
 fps_time = time.time()
 
 steer(CENTER)
-sleep(1)
-forward(45) # 60s = 0.02kp
+sleep(1.9)
+forward(50) # 60s = 0.02kp  50s = 0.012kP
 
 print(f"Robot Started - will stop after {LAPS_TO_COMPLETE} laps ({total_lines} gate crossings)")
 #video = cv2.VideoWriter(f"output{timestamp}.mp4", cv2.VideoWriter_fourcc(*"mp4v"), 20, (WIDTH, HEIGHT))
@@ -155,15 +154,6 @@ while True:
     lab = cv2.merge((l,a,b))
 
     black_mask = cv2.inRange(lab, BLACK_LOWER, BLACK_UPPER)
-
-    # Build an exclusion mask for the orange marker FIRST, so we can
-    # remove those pixels from the black line mask. Keep this tight -
-    # only the marker's own pixels, no padding - so we don't eat into
-    # real track-line pixels right where a turn might be happening.
-    orange_exclude = cv2.inRange(lab, ORANGE_LOWER, ORANGE_UPPER)
-    orange_exclude = cv2.morphologyEx(orange_exclude, cv2.MORPH_CLOSE, np.ones((5,5), np.uint8))
-    black_mask = cv2.bitwise_and(black_mask, cv2.bitwise_not(orange_exclude))
-
     black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_OPEN, kernel)
     black_mask = cv2.morphologyEx(black_mask, cv2.MORPH_CLOSE, kernel)
     black_mask = cv2.dilate(black_mask, kernel, iterations=1)
@@ -237,33 +227,28 @@ while True:
     if all_points:
         merged = np.vstack(all_points)
         x, y, w, h = cv2.boundingRect(merged)
-        total_area = sum(cv2.contourArea(c) for c in all_points)
-        if total_area > 800:
-            orange_detected = True
+
         cv2.rectangle(output, (x, y), (x+w, y+h), (0,165,255), 2)
     
     current_time = time.time()
 
     if CLOCKWISE is None:
-        # Whichever color shows up FIRST wins - that color is used for
-        # ALL future counting. The other color is permanently ignored
-        # for the rest of the run.
-        if orange_detected:
-            CLOCKWISE = True
-            last_line_time = current_time
-            print("First line seen: ORANGE -> counting orange only, blue ignored")
-
-        elif blue_detected:
+        if blue_detected:
             CLOCKWISE = False
-            last_line_time = current_time
-            print("First line seen: BLUE -> counting blue only, orange ignored")
+            last_line_time = current_time   # start cooldown, don't count yet
+            print("ANTICLOCKWISE")
+
+        elif orange_detected:
+            CLOCKWISE = True
+            last_line_time = current_time   # start cooldown, don't count yet
+            print("CLOCKWISE")
 
     else:
-        if CLOCKWISE:
-            marker_seen = orange_detected   # blue is ignored from here on
-        else:
-            marker_seen = blue_detected     # orange is ignored from here on
-
+        # Count crossings of the SAME marker color that set the direction.
+        # Only count on the RISING EDGE (marker just appeared) so a single
+        # slow crossing, or the line staying in view for several frames,
+        # doesn't get counted multiple times.
+        marker_seen = orange_detected if CLOCKWISE else blue_detected
         if marker_seen and not prev_marker_seen and current_time - last_line_time > LINE_COOLDOWN:
             line_count += 1
             last_line_time = current_time
@@ -275,7 +260,6 @@ while True:
         print(f"{LAPS_TO_COMPLETE} laps complete - stopping")
         break
     print(f"Line {line_count} / {total_lines}  (lap {line_count // LINES_PER_LAP} of {LAPS_TO_COMPLETE})")
-
     if left_target and right_target:
 
         left_x, left_y = left_target
@@ -289,7 +273,6 @@ while True:
         angle = CENTER + error * KP
 
         steer(angle)
-        last_valid_angle = angle
 
     elif left_target:
 
@@ -298,7 +281,6 @@ while True:
         angle = CENTER + ((only_x - 200) * KP)
 
         steer(angle)
-        last_valid_angle = angle
 
     elif right_target:
 
@@ -307,7 +289,6 @@ while True:
         angle = CENTER + ((only_x - (WIDTH - 200)) * KP)
 
         steer(angle)
-        last_valid_angle = angle
 
     else:
 
